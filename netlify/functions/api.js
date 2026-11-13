@@ -107,7 +107,7 @@ async function getUser(login) {
 }
 async function listRequests() {
   const rows = await readRange(`${QUEUE}!A2:Q`);
-  return rows.map(r => Object.fromEntries(HEADERS.map((h, i) => [h, r[i] ?? ""])));
+  return rows.map((r, i) => ({ ...Object.fromEntries(HEADERS.map((h, j) => [h, r[j] ?? ""])), _row: i + 2 }));
 }
 async function getRequest(id) {
   return (await listRequests()).find(r => r.REQ_ID === id) || null;
@@ -117,14 +117,11 @@ async function addRequest(obj) {
   await sheets(`values/${encodeURIComponent(`${QUEUE}!A:Q`)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     { method: "POST", body: JSON.stringify({ values: [row] }) });
 }
-async function updateRequest(id, changes) {
-  const ids = await readRange(`${QUEUE}!A:A`);
-  const idx = ids.findIndex(r => r[0] === id);
-  if (idx < 1) throw new Error("Request not found");
-  const rowNo = idx + 1, range = `${QUEUE}!A${rowNo}:Q${rowNo}`;
-  const cur = (await readRange(range))[0] || [];
-  const merged = HEADERS.map((h, i) => (h in changes ? changes[h] : cur[i] ?? ""));
+async function updateRequest(r, changes) {
+  const merged = HEADERS.map(h => (h in changes ? changes[h] : r[h] ?? ""));
+  const range = `${QUEUE}!A${r._row}:Q${r._row}`;
   await sheets(`values/${encodeURIComponent(range)}?valueInputOption=RAW`, { method: "PUT", body: JSON.stringify({ values: [merged] }) });
+  Object.assign(r, changes);
 }
 
 // ---- mail (Brevo HTTPS API; Netlify does not allow SMTP ports) ----
@@ -170,33 +167,31 @@ async function submit(user, b) {
   const id = "BM-" + new Date(Date.now() + IST_OFFSET).toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
   await addRequest({ REQ_ID: id, SUBMITTED_AT: nowIST(), SUBMITTED_BY: user.login || String(b.caller_name || "").trim() || "CALLER FORM", LOAN_NO: loan, CUSTOMER: customer,
     BRANCH: branch, SETTLEMENT: amount, CALLER_CODE: "", CALLER_NAME: String(b.caller_name || "").trim(), CC_MAIL: cc, BRANCH_MAIL: branchMail, STATUS: "PENDING_LEADER" });
-  return json(200, { message: `Request ${id} submitted. Waiting for leader approval.` });
+  return json(200, { message: `Request ${id} submitted. Waiting for approval.` });
 }
 async function decide(user, b) {
   if (user.role !== "ADMIN") return json(403, { error: "Only admin can approve." });
   const r = await getRequest(String(b.req_id || ""));
   if (!r || r.STATUS !== "PENDING_LEADER") return json(400, { error: "This request is no longer waiting for approval." });
-  if (b.action !== "approve") {
-    await updateRequest(r.REQ_ID, { STATUS: "REJECTED", LEADER_BY: user.login, LEADER_AT: nowIST() });
+  if (b.decision !== "approve") {
+    await updateRequest(r, { STATUS: "REJECTED", LEADER_BY: user.login, LEADER_AT: nowIST() });
     return json(200, { message: `${r.REQ_ID} rejected.` });
   }
-  await updateRequest(r.REQ_ID, { STATUS: "APPROVED", LEADER_BY: user.login, LEADER_AT: nowIST() });
   const m = buildMail(r);
-  if ((m.subject + m.body).includes("PASTE"))
-    return json(200, { message: `${r.REQ_ID} approved, but not sent: the Branch Mail v3.2 wording is not in api.js yet.` });
-  if (!CFG.mailLive && !CFG.testTo)
+  if (!CFG.mailLive && !CFG.testTo) {
+    await updateRequest(r, { STATUS: "APPROVED", LEADER_BY: user.login, LEADER_AT: nowIST() });
     return json(200, { message: `${r.REQ_ID} approved, but not sent: MAIL_TEST_TO is not set.` });
-  await updateRequest(r.REQ_ID, { STATUS: "SENDING" });
+  }
+  await updateRequest(r, { STATUS: "SENDING", LEADER_BY: user.login, LEADER_AT: nowIST() });
   try {
     await sendBrevo(m);
   } catch (err) {
-    await updateRequest(r.REQ_ID, { STATUS: "FAILED", NOTE: err.message.slice(0, 200) });
+    await updateRequest(r, { STATUS: "FAILED", NOTE: err.message.slice(0, 200) });
     return json(502, { error: "Approved, but the mail failed: " + err.message });
   }
-  await updateRequest(r.REQ_ID, { STATUS: "SENT", SENT_AT: nowIST(), SENT_BY: user.login, NOTE: "" });
+  await updateRequest(r, { STATUS: "SENT", SENT_AT: nowIST(), SENT_BY: user.login, NOTE: "" });
   return json(200, { message: `${r.REQ_ID} approved and sent to ${m.to.join(", ")}.` });
 }
-
 async function preview(user, b) {
   if (!["LEADER", "ADMIN"].includes(user.role)) return json(403, { error: "Not allowed." });
   const r = await getRequest(String(b.req_id || ""));
@@ -212,15 +207,14 @@ async function send(user, b) {
   if (!r || !["APPROVED", "FAILED"].includes(r.STATUS)) return json(400, { error: "This request is not approved for sending." });
   if (!CFG.mailLive && !CFG.testTo) return json(400, { error: "Test mode needs MAIL_TEST_TO set." });
   const m = buildMail(r);
-  if ((m.subject + m.body).includes("PASTE")) return json(400, { error: "Paste the Branch Mail v3.2 wording into netlify/functions/api.js first." });
-  await updateRequest(r.REQ_ID, { STATUS: "SENDING" });
+  await updateRequest(r, { STATUS: "SENDING" });
   try {
     await sendBrevo(m);
   } catch (err) {
-    await updateRequest(r.REQ_ID, { STATUS: "FAILED", NOTE: err.message.slice(0, 200) });
+    await updateRequest(r, { STATUS: "FAILED", NOTE: err.message.slice(0, 200) });
     return json(502, { error: "Send failed: " + err.message });
   }
-  await updateRequest(r.REQ_ID, { STATUS: "SENT", SENT_AT: nowIST(), SENT_BY: user.login, NOTE: "" });
+  await updateRequest(r, { STATUS: "SENT", SENT_AT: nowIST(), SENT_BY: user.login, NOTE: "" });
   return json(200, { message: `${r.REQ_ID} sent to ${m.to.join(", ")}.` });
 }
 
@@ -232,6 +226,11 @@ exports.handler = async (event) => {
     const action = body.action;
     if (action === "login") return login(body);
     if (action === "logout") return json(200, { ok: true }, { "Set-Cookie": "bm_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" });
+    if (action === "public_list") {
+      const rows = await listRequests();
+      return json(200, { rows: rows.slice().reverse().slice(0, 200).map(r => ({
+        REQ_ID: r.REQ_ID, SUBMITTED_AT: r.SUBMITTED_AT, LOAN_NO: r.LOAN_NO, STATUS: r.STATUS, SENT_AT: r.SENT_AT })) });
+    }
     if (action === "submit") return await submit(readUser(event) || { login: "" }, body);
     const user = readUser(event);
     if (!user) return json(401, { error: "Please log in." });
