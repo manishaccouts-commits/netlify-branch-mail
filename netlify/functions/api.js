@@ -209,7 +209,7 @@ exports.handler = async (event) => {
     if (event.httpMethod !== "POST") return json(405, { error: "Use POST." });
     const body = JSON.parse(event.body || "{}");
     const action = body.action;
-    if (action === "login") return login(body);
+    if (action === "login") return await login(body);
     if (action === "logout") return json(200, { ok: true }, { "Set-Cookie": "bm_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" });
     const user = readUser(event);
     if (!user) return json(401, { error: "Please log in." });
@@ -218,10 +218,10 @@ exports.handler = async (event) => {
       const rows = await listRequests();
       return json(200, { rows: user.role === "CALLER" ? rows.filter(r => r.SUBMITTED_BY.toUpperCase() === user.login.toUpperCase()) : rows });
     }
-    if (action === "submit") return submit(user, body);
-    if (action === "decide") return decide(user, body);
-    if (action === "preview") return preview(user, body);
-    if (action === "send") return send(user, body);
+    if (action === "submit") return await submit(user, body);
+    if (action === "decide") return await decide(user, body);
+    if (action === "preview") return await preview(user, body);
+    if (action === "send") return await send(user, body);
     return json(400, { error: "Unknown action." });
   } catch (err) {
     return json(500, { error: err.message || "Server error" });
