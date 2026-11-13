@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Branch Mail Portal</title>
+<style>
+body{font-family:Cambria,Georgia,serif;margin:0;background:#f4f7fb;color:#1d2b3a}
+header{background:#1f4e9a;color:#fff;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+header button{background:none;border:0;color:#fff;cursor:pointer;font:inherit;text-decoration:underline}
+main{padding:20px 24px;max-width:1200px;margin:auto}
+.box{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow-x:auto}
+.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.card{background:#fff;border-radius:10px;padding:12px 16px;min-width:140px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.card b{display:block;font-size:24px;color:#1f4e9a}
+input{padding:8px;border:1px solid #b9c6d8;border-radius:6px;font:inherit;margin:4px 6px 4px 0}
+button.b{padding:7px 14px;border:0;border-radius:6px;background:#1f4e9a;color:#fff;font:inherit;cursor:pointer;margin-right:4px}
+.ok{background:#2e8b57}.no{background:#c0392b}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px;border-bottom:1px solid #e3e9f2;text-align:left;vertical-align:top}
+.msg{background:#e8f1fb;padding:10px 14px;border-radius:6px;margin-bottom:14px}
+pre{white-space:pre-wrap;background:#f7f9fc;padding:12px;border-radius:6px}
+</style></head><body>
+<header><b>Branch Mail Portal</b><span id="who"></span></header>
+<main>
+<div id="msg"></div>
+<section id="login" class="box" style="max-width:380px;display:none">
+ <h3>Log in</h3>
+ <form id="loginForm"><input name="login" placeholder="Employee code" required><br><input name="password" type="password" placeholder="Password" required><br><button class="b">Log in</button></form>
+</section>
+<section id="app" style="display:none">
+ <div class="cards" id="cards"></div>
+ <div class="box"><h3>New branch mail request</h3>
+ <form id="submitForm">
+  <input name="loan_no" placeholder="Loan / HP number" required>
+  <input name="settlement" placeholder="Closing amount" required>
+  <input name="customer" placeholder="Customer name" required>
+  <input name="branch" placeholder="Branch" required>
+  <input name="caller_name" placeholder="Caller name">
+  <input name="cc_mail" type="email" placeholder="Caller email (Cc)" required>
+  <button class="b">Submit for approval</button>
+ </form></div>
+ <div class="box" id="previewBox" style="display:none"></div>
+ <div class="box"><h3 id="listTitle"></h3>
+ <table><thead><tr><th>Request</th><th>Submitted</th><th>By</th><th>Loan</th><th>Customer</th><th>Amount</th><th>Cc</th><th>Status</th><th>Action</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+</main>
+<script>
+const API = "/.netlify/functions/api";
+let me = null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const say = t => { $("msg").innerHTML = t ? `<div class="msg">${esc(t)}</div>` : ""; };
+async function call(action, data = {}) {
+  const r = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...data }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "Request failed");
+  return j;
+}
+async function boot() {
+  try { me = (await call("me")).user; } catch { me = null; }
+  $("login").style.display = me ? "none" : "block";
+  $("app").style.display = me ? "block" : "none";
+  $("who").innerHTML = me ? `${esc(me.name)} · ${esc(me.role)} · <button onclick="logout()">Log out</button>` : "";
+  if (me) await load();
+}
+async function logout() { await call("logout"); location.reload(); }
+$("loginForm").onsubmit = async e => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try { await call("login", { login: f.get("login"), password: f.get("password") }); say(""); await boot(); }
+  catch (x) { say(x.message); }
+};
+$("submitForm").onsubmit = async e => {
+  e.preventDefault();
+  try { say((await call("submit", Object.fromEntries(new FormData(e.target)))).message); e.target.reset(); await load(); }
+  catch (x) { say(x.message); }
+};
+async function load() {
+  const { rows } = await call("list");
+  const n = s => rows.filter(r => r.STATUS === s).length;
+  $("cards").innerHTML = [["Waiting approval", n("PENDING_LEADER")], ["Approved, not sent", n("APPROVED")], ["Sent", n("SENT")], ["Failed", n("FAILED")], ["Rejected", n("REJECTED")]]
+    .map(([t, c]) => `<div class="card">${t}<b>${c}</b></div>`).join("");
+  $("listTitle").textContent = me.role === "CALLER" ? "My requests" : "All requests";
+  $("rows").innerHTML = rows.length ? rows.slice().reverse().map(r => `<tr>
+    <td>${esc(r.REQ_ID)}</td><td>${esc(r.SUBMITTED_AT)}</td><td>${esc(r.SUBMITTED_BY)}</td><td>${esc(r.LOAN_NO)}</td>
+    <td>${esc(r.CUSTOMER)}</td><td>${esc(r.SETTLEMENT)}</td><td>${esc(r.CC_MAIL)}</td>
+    <td>${esc(r.STATUS)}${r.SENT_AT ? "<br><small>" + esc(r.SENT_AT) + "</small>" : ""}${r.NOTE ? "<br><small>" + esc(r.NOTE) + "</small>" : ""}</td>
+    <td>${actions(r)}</td></tr>`).join("") : `<tr><td colspan="9">No requests yet.</td></tr>`;
+}
+function actions(r) {
+  let h = "";
+  if (r.STATUS === "PENDING_LEADER" && ["LEADER", "ADMIN"].includes(me.role))
+    h += `<button class="b ok" onclick="decide('${esc(r.REQ_ID)}','approve')">Approve</button><button class="b no" onclick="decide('${esc(r.REQ_ID)}','reject')">Reject</button>`;
+  if (["APPROVED", "FAILED"].includes(r.STATUS) && me.role === "ADMIN")
+    h += `<button class="b" onclick="preview('${esc(r.REQ_ID)}')">Preview</button>`;
+  return h;
+}
+async function decide(id, action) {
+  try { say((await call("decide", { req_id: id, action })).message); await load(); }
+  catch (x) { say(x.message); }
+}
+async function preview(id) {
+  try {
+    const p = await call("preview", { req_id: id });
+    const m = p.mail;
+    $("previewBox").style.display = "block";
+    $("previewBox").innerHTML = `<h3>Preview: ${esc(id)}</h3>
+      <p><b>To:</b> ${esc(m.to)}<br><b>Cc:</b> ${esc(m.cc || "-")}<br><b>Subject:</b> ${esc(m.subject)}</p>
+      <pre>${esc(m.body)}</pre>
+      ${p.ready ? `<label><input type="checkbox" id="confirmBox"> I checked the preview</label>
+        <button class="b ok" onclick="sendMail('${esc(id)}')">Send mail now</button>`
+        : `<p><b>Sending is blocked:</b> the Branch Mail v3.2 wording is not in api.js yet.</p>`}`;
+  } catch (x) { say(x.message); }
+}
+async function sendMail(id) {
+  if (!$("confirmBox") || !$("confirmBox").checked) { say("Tick 'I checked the preview' first."); return; }
+  try {
+    say((await call("send", { req_id: id, confirm: true })).message);
+    $("previewBox").style.display = "none";
+    await load();
+  } catch (x) { say(x.message); await load(); }
+}
+boot();
+</script>
+</body></html>
