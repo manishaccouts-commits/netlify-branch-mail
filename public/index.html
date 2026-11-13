@@ -21,13 +21,8 @@ pre{white-space:pre-wrap;background:#f7f9fc;padding:12px;border-radius:6px}
 <header><b>Branch Mail Portal</b><span id="who"></span></header>
 <main>
 <div id="msg"></div>
-<section id="login" class="box" style="max-width:380px;display:none">
- <h3>Log in</h3>
- <form id="loginForm"><input name="login" placeholder="Employee code" required><br><input name="password" type="password" placeholder="Password" required><br><button class="b">Log in</button></form>
-</section>
-<section id="app" style="display:none">
- <div class="cards" id="cards"></div>
- <div class="box"><h3>New branch mail request</h3>
+<section id="publicForm" class="box">
+ <h3>New branch mail request</h3>
  <form id="submitForm">
   <input name="loan_no" placeholder="Loan / HP number" required>
   <input name="settlement" placeholder="Closing amount" required>
@@ -35,8 +30,16 @@ pre{white-space:pre-wrap;background:#f7f9fc;padding:12px;border-radius:6px}
   <input name="branch" placeholder="Branch" required>
   <input name="caller_name" placeholder="Caller name">
   <input name="cc_mail" type="email" placeholder="Caller email (Cc)" required>
+  <input name="branch_mail" type="email" placeholder="Cashier / branch mail ID" required>
   <button class="b">Submit for approval</button>
- </form></div>
+ </form>
+</section>
+<section id="login" class="box" style="max-width:380px;display:none">
+ <h3>Admin log in</h3>
+ <form id="loginForm"><input name="login" placeholder="Employee code" required><br><input name="password" type="password" placeholder="Password" required><br><button class="b">Log in</button></form>
+</section>
+<section id="app" style="display:none">
+ <div class="cards" id="cards"></div>
  <div class="box" id="previewBox" style="display:none"></div>
  <div class="box"><h3 id="listTitle"></h3>
  <table><thead><tr><th>Request</th><th>Submitted</th><th>By</th><th>Loan</th><th>Customer</th><th>Amount</th><th>Cc</th><th>Status</th><th>Action</th></tr></thead><tbody id="rows"></tbody></table></div>
@@ -56,11 +59,12 @@ async function call(action, data = {}) {
 }
 async function boot() {
   try { me = (await call("me")).user; } catch { me = null; }
-  $("login").style.display = me ? "none" : "block";
+  $("login").style.display = "none";
   $("app").style.display = me ? "block" : "none";
-  $("who").innerHTML = me ? `${esc(me.name)} · ${esc(me.role)} · <button onclick="logout()">Log out</button>` : "";
+  $("who").innerHTML = me ? `${esc(me.name)} · ${esc(me.role)} · <button onclick="logout()">Log out</button>` : `<button onclick="showLogin()">Admin log in</button>`;
   if (me) await load();
 }
+function showLogin() { $("login").style.display = "block"; }
 async function logout() { await call("logout"); location.reload(); }
 $("loginForm").onsubmit = async e => {
   e.preventDefault();
@@ -70,7 +74,7 @@ $("loginForm").onsubmit = async e => {
 };
 $("submitForm").onsubmit = async e => {
   e.preventDefault();
-  try { say((await call("submit", Object.fromEntries(new FormData(e.target)))).message); e.target.reset(); await load(); }
+  try { say((await call("submit", Object.fromEntries(new FormData(e.target)))).message); e.target.reset(); if (me) await load(); }
   catch (x) { say(x.message); }
 };
 async function load() {
